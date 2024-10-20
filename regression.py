@@ -8,6 +8,7 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.callbacks import ReduceLROnPlateau
+from tensorflow.keras.losses import Huber
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
@@ -16,7 +17,7 @@ dataset_dir = 'D:\\Data\\VirajaProject\\pythonProject1'
 images_dir = os.path.join(dataset_dir, 'images')
 annotations_dir = os.path.join(dataset_dir, 'annotations')
 
-# Image size for input to the model
+# Increased image size for better resolution
 IMG_SIZE = (128, 128)
 
 # Load and process images with normalized bounding boxes
@@ -46,18 +47,6 @@ def extract_bounding_boxes(xml_path):
 
         bounding_boxes.append((xmin, ymin, xmax, ymax))
     return bounding_boxes
-
-def normalize_bounding_boxes(image, bounding_boxes):
-    """Normalizes bounding boxes relative to the image dimensions."""
-    height, width, _ = image.shape
-    normalized_boxes = []
-    for (xmin, ymin, xmax, ymax) in bounding_boxes:
-        xmin_norm = xmin / width
-        ymin_norm = ymin / height
-        xmax_norm = xmax / width
-        ymax_norm = ymax / height
-        normalized_boxes.append((xmin_norm, ymin_norm, xmax_norm, ymax_norm))
-    return normalized_boxes
 
 def load_dataset_with_bounding_boxes(images_dir, annotations_dir):
     """Loads images and bounding boxes, processes them into Numpy arrays."""
@@ -99,18 +88,45 @@ def create_finetuned_mobilenet_model(input_shape):
 
     model = Model(inputs=base_model.input, outputs=outputs)
 
-    # Compile the model with mean squared error loss for bounding box regression
-    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
+    # Compile the model with Huber loss for bounding box regression
+    model.compile(optimizer='adam', loss=Huber(), metrics=['mae'])
 
     return model
 
-# Data Augmentation
+# IoU Calculation Function
+def calculate_iou(true_bbox, pred_bbox):
+    """Calculate Intersection over Union (IoU) between ground truth and predicted bounding boxes."""
+    # Extract coordinates
+    xmin_true, ymin_true, xmax_true, ymax_true = true_bbox
+    xmin_pred, ymin_pred, xmax_pred, ymax_pred = pred_bbox
+
+    # Determine the coordinates of the intersection rectangle
+    xA = max(xmin_true, xmin_pred)
+    yA = max(ymin_true, ymin_pred)
+    xB = min(xmax_true, xmax_pred)
+    yB = min(ymax_true, ymax_pred)
+
+    # Compute the area of intersection rectangle
+    interArea = max(0, xB - xA) * max(0, yB - yA)
+
+    # Compute the area of both the true and predicted boxes
+    boxTrueArea = (xmax_true - xmin_true) * (ymax_true - ymin_true)
+    boxPredArea = (xmax_pred - xmin_pred) * (ymax_pred - ymin_pred)
+
+    # Compute the IoU
+    iou = interArea / float(boxTrueArea + boxPredArea - interArea)
+
+    return iou
+
+# Data Augmentation with increased variations
 datagen = ImageDataGenerator(
-    rotation_range=10,  # Reduced augmentation ranges for higher precision
-    width_shift_range=0.05,
-    height_shift_range=0.05,
-    zoom_range=0.05,
+    rotation_range=20,   # Increased rotation for more robustness
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    zoom_range=0.2,  # Increased zoom range for more variation
     horizontal_flip=True,
+    brightness_range=[0.8, 1.2],  # Vary brightness for more generalization
+    shear_range=0.1,  # Added shear for more variation
     fill_mode='nearest'
 )
 
@@ -156,14 +172,27 @@ if __name__ == "__main__":
                   epochs=50,  # Increased number of epochs for more training
                   callbacks=[reduce_lr])
 
+    # Evaluate the model using MAE
     val_loss, val_mae = cnn_model.evaluate(x_val, y_val)
     print(f"Validation Loss: {val_loss}")
     print(f"Validation MAE: {val_mae}")
 
+    # Evaluate model using IoU
+    iou_scores = []
+    for i in range(len(x_val)):
+        true_bbox = y_val[i]
+        pred_bbox = cnn_model.predict(x_val[i].reshape(1, 128, 128, 3))[0]
+        iou = calculate_iou(true_bbox, pred_bbox)
+        iou_scores.append(iou)
+
+    avg_iou = np.mean(iou_scores)
+    print(f"Average IoU on validation set: {avg_iou}")
+
+    # Visualize a sample prediction
     index = 0
     true_bbox = y_val[index]
     pred_bbox = cnn_model.predict(x_val[index].reshape(1, 128, 128, 3))[0]
 
     visualize_bounding_boxes(x_val[index], true_bbox, pred_bbox)
 
-    cnn_model.save('finetuned_mobilenet_bounding_box_regression_model.keras')
+    cnn_model.save('finetuned_mobilenet_bounding_box_regression_model_v2.keras')
